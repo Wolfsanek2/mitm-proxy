@@ -1,0 +1,17 @@
+version: '3.9'
+
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - 8080:8080
+      - 8000:8000
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./proxy
+          target: /app
+        - action: rebuild
+          path: package.json
