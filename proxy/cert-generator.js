@@ -3,89 +3,75 @@ import fs from 'node:fs';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import tls from 'node:tls';
+import forge from 'node-forge';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const ROOT_DIR = path.resolve(__dirname, '../');
 
 const GET_CERT_SCRIPT = path.resolve(__dirname, '../cmd/get_cert.sh');
-console.log('GET_CERT_SCRIPT:', GET_CERT_SCRIPT);
 
 const CERTS_DIR = path.resolve(__dirname, '../certs');
-console.log('CERTS_DIR:', CERTS_DIR);
 
 const keyPath = path.join(ROOT_DIR, 'cert.key');
-console.log('keyPath:', keyPath);
 
-// export const generateCert = (servername, cb, certs) => {
-// 	console.log(`gen cert ${servername}`);
-// 	let gen_cert = spawn('./gen_cert.sh', [
-// 		servername,
-// 		Math.floor(Math.random() * 1000000000000),
-// 	]);
+const CA_CERT_PATH = path.resolve(__dirname, '../ca.crt');
+const CA_KEY_PATH = path.resolve(__dirname, '../ca.key');
 
-// 	gen_cert.stdout.once('data', (data) => {
-// 		certs[servername] = data;
-// 		let ctx = createSecureContext(data);
-// 		cb(null, ctx);
-// 		fs.writeFile(`certs/${servername}.crt`, data, (err) => {
-// 			if (err) {
-// 				console.log(err.message);
-// 			}
-// 		});
-// 	});
+const caCert = forge.pki.certificateFromPem(fs.readFileSync(CA_CERT_PATH));
+const caKey = forge.pki.privateKeyFromPem(fs.readFileSync(CA_KEY_PATH));
 
-// 	gen_cert.stderr.on('data', (data) => {
-// 		console.log(`cert gen stderr: ${data}`);
-// 	});
-// };
+export const generateCertificate = (hostname) => {
+	const keys = forge.pki.rsa.generateKeyPair(2048);
+	const cert = forge.pki.createCertificate();
 
-const key = fs.readFileSync(keyPath);
+	cert.publicKey = keys.publicKey;
+	cert.serialNumber = Date.now().toString();
+	cert.validity.notBefore = new Date();
+	cert.validity.notAfter = new Date();
+	cert.validity.notAfter.setFullYear(
+		cert.validity.notBefore.getFullYear() + 1,
+	);
 
-const createSecureContext = (cert) => {
-	return tls.createSecureContext({ cert, key });
-};
+	cert.setSubject([{ name: 'commonName', value: hostname }]);
+	cert.setIssuer(caCert.subject.attributes);
 
-export const generateCert = (domain, callback, certs) => {
-	try {
-		const { cert, key } = generateCertForDomain(domain, callback, certs);
-		const ctx = tls.createSecureContext({ cert, key });
-		callback(null, ctx);
-	} catch (err) {
-		console.error('generateCert error:', err);
-		callback(err);
-	}
-};
+	const extensions = [
+		{
+			name: 'basicConstraints',
+			cA: false,
+		},
+		{
+			name: 'keyUsage',
+			digitalSignature: true,
+			keyEncipherment: true,
+			nonRepudiation: true,
+		},
+		{
+			name: 'extKeyUsage',
+			serverAuth: true,
+		},
+		{
+			name: 'subjectAltName',
+			altNames: [
+				{
+					type: 2, // DNS
+					value: hostname,
+				},
+			],
+		},
+	];
 
-const generateCertForDomain = (servername, cb, certs) => {
-	console.log(`gen cert ${servername}`);
-	console.log('GET_CERT_SCRIPT:', GET_CERT_SCRIPT);
-	let gen_cert = spawn(GET_CERT_SCRIPT, [
-		servername,
-		Math.floor(Math.random() * 1000000000000),
-	]);
-
-	let cert;
-	gen_cert.stdout.once('data', (data) => {
-		certs[servername] = data;
-		let ctx = createSecureContext(data);
-		cb(null, ctx);
-		fs.writeFile(
-			path.resolve(__dirname, `../certs/${servername}.crt`),
-			data,
-			(err) => {
-				if (err) {
-					console.log(err.message);
-				}
-			},
-		);
-		cert = data;
-		console.log(`cert for ${servername} generated`);
+	// Добавляем расширения по одному
+	extensions.forEach((ext) => {
+		cert.setExtensions([ext]);
 	});
 
-	gen_cert.stderr.on('data', (data) => {
-		console.log(`cert gen stderr: ${data}`);
-	});
+	cert.sign(caKey, forge.md.sha256.create());
 
-	return { cert, key };
+	const result = {
+		key: forge.pki.privateKeyToPem(keys.privateKey),
+		cert: forge.pki.certificateToPem(cert),
+	};
+	return result;
 };

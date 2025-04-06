@@ -1,99 +1,126 @@
 import net from 'node:net';
 import http from 'node:http';
-import url from 'node:url';
-import tls from 'node:tls';
+import https from 'node:https';
+import url, { fileURLToPath } from 'node:url';
+import tls, { createSecureContext } from 'node:tls';
+import { generateCertificate } from './cert-generator.js';
+import path from 'node:path';
 import fs from 'node:fs';
-// import { getCertForDomain } from './cert-generator.js';
+import Stream from 'node:stream';
 
-const CERT_PATH = './cert.crt';
-const KEY_PATH = './cert.key';
-const CA_PATH = './ca.crt';
+const SOCKET_TIMEOUT = 10000;
 
-// const cert = fs.readFileSync(CERT_PATH);
-const key = fs.readFileSync(KEY_PATH);
-const ca = fs.readFileSync(CA_PATH);
+const certCache = {};
 
-export const proxy = (() => {
-	const proxy = http.createServer();
+const httpRequestHandler = (clientReq, clientRes) => {
+	const targetUrl = url.parse(clientReq.url);
+	console.log(`HTTP ${clientReq.method} ${targetUrl.href}`);
 
-	// Обработка обычных HTTP-запросов
-	proxy.on('request', (clientReq, clientRes) => {
-		console.log('request');
-		const targetUrl = url.parse(clientReq.url);
-
-		const options = {
+	const proxyReq = http.request(
+		{
 			hostname: targetUrl.hostname,
 			port: targetUrl.port || 80,
 			path: targetUrl.path,
 			method: clientReq.method,
-			headers: clientReq.headers,
-		};
-
-		const proxyReq = http.request(options, (proxyRes) => {
+			headers: { ...clientReq.headers, host: targetUrl.hostname },
+		},
+		(proxyRes) => {
 			clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);
 			proxyRes.pipe(clientRes);
-		});
+		},
+	);
 
-		proxyReq.on('error', (err) => {
-			console.error('HTTP proxy error:', err);
-			clientRes.writeHead(500);
-			clientRes.end('Proxy error');
-		});
-
-		clientReq.pipe(proxyReq);
+	proxyReq.on('error', (err) => {
+		console.error('HTTP error:', err);
+		clientRes.writeHead(502).end('Proxy error');
 	});
 
-	// Обработка HTTPS-запросов через CONNECT
-	proxy.on('connect', (clientReq, clientSocket, head) => {
-		const [hostname, port] = clientReq.url.split(':');
-		const portNumber = port || 443;
+	clientReq.pipe(proxyReq);
+};
 
-		console.log(`CONNECT to ${hostname}:${portNumber}`);
+/**
+ *
+ * @param {InstanceType<Request>} clientReq
+ * @param {Stream.Duplex} clientSocket
+ * @param {Buffer} head
+ */
+const httpsRequestHandler = (clientReq, clientSocket, head) => {
+	const [hostname, port] = clientReq.url.split(':');
+	const portNumber = port || 443;
+	console.log(`CONNECT to ${hostname}:${portNumber}`);
 
-		const { key, cert } = getCertForDomain(hostname);
-		const clientTlsSocket = tls.connect(
+	// Генерируем сертификат для домена
+	if (!certCache[hostname]) {
+		certCache[hostname] = generateCertificate(hostname);
+	}
+	const { cert, key } = certCache[hostname];
+
+	const serverSocket = net.connect({ host: hostname, port });
+
+	serverSocket.on('connect', () => {
+		// console.log('serverSocket: connect');
+		clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+
+		const serverTlsSocket = tls.connect(
 			{
-				socket: clientSocket,
-				servername: hostname,
-				key,
-				cert,
+				socket: serverSocket,
 				rejectUnauthorized: false,
 			},
 			() => {
-				const serverTlsSocket = tls.connect(
-					{
-						host: hostname,
-						port: 443,
-						rejectUnauthorized: false,
-					},
-					() => {
-						clientSocket.write(
-							'HTTP/1.1 200 Connection Established\r\n\r\n',
-						);
-						clientTlsSocket.pipe(serverTlsSocket);
-						serverTlsSocket.pipe(clientTlsSocket);
-					},
-				);
+				// console.log('serverTlsSocket: secure connect');
 			},
 		);
-
-		proxySocket.on('close', () => {
-			console.log('HTTPS socket closed');
+		const clientTlsSocket = new tls.TLSSocket(clientSocket, {
+			isServer: true,
+			cert,
+			key,
+			rejectUnauthorized: false,
 		});
-
-		clientSocket.on('close', () => {
-			console.log('Client socket closed');
+		clientTlsSocket.pipe(serverTlsSocket);
+		serverTlsSocket.pipe(clientTlsSocket);
+		if (head.length > 0) {
+			clientTlsSocket.write(head);
+		}
+		serverTlsSocket.on('error', (err) => {
+			console.error('serverTlsSocket error:', err);
+			clientTlsSocket.end();
 		});
-
-		proxySocket.on('error', (err) => {
-			console.log('HTTPS proxy error:', err);
-			clientSocket.end();
+		clientTlsSocket.on('error', (err) => {
+			console.error('clientTlsSocket error:', err);
+			serverTlsSocket.end();
 		});
+		// serverTlsSocket.on('data', (data) => {
+		// 	console.log(`serverTlsSocket data:\n ${data.toString('utf-8')}\n`);
+		// 	// fs.appendFile('serverSocketLog.txt', data, () => {});
+		// });
 
-		clientSocket.on('error', (err) => {
-			console.log('Client socket error:', err);
-			proxySocket.end();
-		});
+		// clientTlsSocket.on('data', (data) => {
+		// 	console.log(`clientTlsSocket data:\n ${data.toString('utf-8')}\n`);
+		// 	// fs.appendFile('clientSocketLog.txt', data, () => {});
+		// });
 	});
+
+	serverSocket.on('error', (err) => {
+		console.error('serverSocket error:', err);
+		clientSocket.end();
+	});
+
+	clientSocket.on('error', (err) => {
+		console.error('clientSocket error:', err);
+		serverSocket.end();
+	});
+};
+
+export const proxy = (() => {
+	const proxy = http.createServer();
+
+	proxy.on('request', httpRequestHandler);
+
+	try {
+		proxy.on('connect', httpsRequestHandler);
+	} catch (err) {
+		console.error('https connect error:', err);
+	}
+
 	return proxy;
 })();
