@@ -7,6 +7,9 @@ import { generateCertificate } from './cert-generator.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import Stream from 'node:stream';
+import parseRequest from '../httpParser/parseRequest.js';
+import parseResponse from '../httpParser/parseResponse.js';
+import db from '../db/db.js';
 
 const SOCKET_TIMEOUT = 10000;
 
@@ -39,7 +42,6 @@ const httpRequestHandler = (clientReq, clientRes) => {
 };
 
 /**
- *
  * @param {InstanceType<Request>} clientReq
  * @param {Stream.Duplex} clientSocket
  * @param {Buffer} head
@@ -89,15 +91,29 @@ const httpsRequestHandler = (clientReq, clientSocket, head) => {
 			console.error('clientTlsSocket error:', err);
 			serverTlsSocket.end();
 		});
-		// serverTlsSocket.on('data', (data) => {
-		// 	console.log(`serverTlsSocket data:\n ${data.toString('utf-8')}\n`);
-		// 	// fs.appendFile('serverSocketLog.txt', data, () => {});
-		// });
-
-		// clientTlsSocket.on('data', (data) => {
-		// 	console.log(`clientTlsSocket data:\n ${data.toString('utf-8')}\n`);
-		// 	// fs.appendFile('clientSocketLog.txt', data, () => {});
-		// });
+		let requestData = '';
+		let responseData = '';
+		serverTlsSocket.on('data', (data) => {
+			responseData += data.toString('utf-8');
+		});
+		clientTlsSocket.on('data', (data) => {
+			requestData += data.toString('utf-8');
+		});
+		const requestToSave = {};
+		serverTlsSocket.on('end', () => {
+			const response = parseResponse(responseData.toString());
+			requestToSave.response = JSON.stringify(response);
+			if (requestToSave.request) {
+				db.insert(requestToSave.request, requestToSave.response);
+			}
+		});
+		clientTlsSocket.on('end', () => {
+			const request = parseRequest(requestData.toString());
+			requestToSave.request = request;
+			if (requestToSave.response) {
+				db.insert(requestToSave.request, requestToSave.response);
+			}
+		});
 	});
 
 	serverSocket.on('error', (err) => {
