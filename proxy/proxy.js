@@ -1,17 +1,12 @@
 import net from 'node:net';
 import http from 'node:http';
-import https from 'node:https';
-import url, { fileURLToPath } from 'node:url';
-import tls, { createSecureContext } from 'node:tls';
+import url from 'node:url';
+import tls from 'node:tls';
 import { generateCertificate } from './cert-generator.js';
-import path from 'node:path';
-import fs from 'node:fs';
 import Stream from 'node:stream';
 import parseRequest from '../httpParser/parseRequest.js';
 import parseResponse from '../httpParser/parseResponse.js';
 import db from '../db/db.js';
-
-const SOCKET_TIMEOUT = 10000;
 
 const certCache = {};
 
@@ -91,24 +86,24 @@ const httpsRequestHandler = (clientReq, clientSocket, head) => {
 			console.error('clientTlsSocket error:', err);
 			serverTlsSocket.end();
 		});
-		let requestData = '';
-		let responseData = '';
+		let requestData = Buffer.alloc(0);
+		let responseData = Buffer.alloc(0);
 		serverTlsSocket.on('data', (data) => {
-			responseData += data.toString('utf-8');
+			responseData = Buffer.concat([responseData, data]);
 		});
 		clientTlsSocket.on('data', (data) => {
-			requestData += data.toString('utf-8');
+			requestData = Buffer.concat([requestData, data]);
 		});
 		const requestToSave = {};
 		serverTlsSocket.on('end', () => {
-			const response = parseResponse(responseData.toString());
-			requestToSave.response = JSON.stringify(response);
+			const response = parseResponse(responseData);
+			requestToSave.response = response;
 			if (requestToSave.request) {
 				db.insert(requestToSave.request, requestToSave.response);
 			}
 		});
 		clientTlsSocket.on('end', () => {
-			const request = parseRequest(requestData.toString());
+			const request = parseRequest(requestData);
 			requestToSave.request = request;
 			if (requestToSave.response) {
 				db.insert(requestToSave.request, requestToSave.response);

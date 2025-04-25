@@ -1,8 +1,8 @@
-import db from 'better-sqlite3';
+import Database from 'better-sqlite3';
 
 class DB {
 	constructor() {
-		this.db = db('proxyDB.sqlite');
+		this.db = Database('proxyDB.sqlite');
 		this.db.exec(
 			'CREATE TABLE IF NOT EXISTS http_logs (id INTEGER PRIMARY KEY, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, request TEXT, response TEXT)',
 		);

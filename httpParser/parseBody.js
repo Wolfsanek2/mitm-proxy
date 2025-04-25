@@ -4,10 +4,11 @@
  */
 export default (body, contentType) => {
 	if (contentType === 'application/x-www-form-urlencoded') {
-		return body.split('\r\n').map((pair) => {
+		return body.split('&').reduce((result, pair) => {
 			const [key, value] = pair.split('=').map(decodeURIComponent);
-			return { [key]: value };
-		});
+			result[key] = value;
+			return result;
+		}, {});
 	}
 	return body;
 };
