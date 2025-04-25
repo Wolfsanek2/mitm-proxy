@@ -16,7 +16,6 @@ export default (requestData) => {
 			.map(([key, value]) => `${key}=${value}`)
 			.join('; ');
 	}
-	console.log('headers:', headers);
 	const method = requestData.method;
 	const request = https.request(
 		{
